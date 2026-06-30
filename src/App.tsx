@@ -1,13 +1,11 @@
 import { useState, useEffect, useRef } from "react";
 
-import "./App.css";
-
 const GRID_SIZE = 20;
-type Pos = [number, number];
+const CELL_PX = 24;
 
+type Pos = [number, number];
 const INITIAL_SNAKE: Pos[] = [[0, 0]];
 
-// Pick a random cell that doesn't overlap any snake segment.
 function randomFood(snake: Pos[]): Pos {
   let pos: Pos;
   do {
@@ -28,20 +26,14 @@ function initialGameState(): GameState {
   return { snake: INITIAL_SNAKE, food: randomFood(INITIAL_SNAKE) };
 }
 
-function App() {
+export default function App() {
   const [game, setGame] = useState<GameState>(initialGameState);
   const [gameOver, setGameOver] = useState(false);
-  // Snake stays frozen until the player presses an arrow key for the first time.
   const [started, setStarted] = useState(false);
-  // Stored in a ref so direction changes don't restart the movement interval.
+  const [score, setScore] = useState(0);
   const directionRef = useRef<string>("right");
-  // Tracks the direction used on the last tick — the true reference for what
-  // counts as a reversal. Prevents right→down→left between two ticks from
-  // killing the snake.
   const lastTickDirectionRef = useRef<string>("right");
 
-  // Listen for arrow keys on the window. Sets direction and unfreeze the snake
-  // on the first keypress.
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
       const map: Record<string, string> = {
@@ -50,40 +42,28 @@ function App() {
         ArrowLeft: "left",
         ArrowRight: "right",
       };
-      if (map[e.key]) {
-        e.preventDefault();
-        const next = map[e.key];
-        const opposite: Record<string, string> = {
-          up: "down",
-          down: "up",
-          left: "right",
-          right: "left",
-        };
-        // Block if opposite of the last applied direction (prevents neck collision)
-        // OR opposite of the currently buffered direction (prevents a second rapid
-        // keypress from cancelling out a buffered turn within the same tick window,
-        // e.g. LEFT→buffer UP→press DOWN would pass the applied-direction check but
-        // reverse the buffered UP, sending the head into seg[2]).
-        if (
-          next !== opposite[lastTickDirectionRef.current] &&
-          next !== opposite[directionRef.current]
-        ) {
-          directionRef.current = next;
-          setStarted(true);
-        }
+      if (!map[e.key]) return;
+      e.preventDefault();
+      const next = map[e.key];
+      const opposite: Record<string, string> = {
+        up: "down", down: "up", left: "right", right: "left",
+      };
+      if (
+        next !== opposite[lastTickDirectionRef.current] &&
+        next !== opposite[directionRef.current]
+      ) {
+        directionRef.current = next;
+        setStarted(true);
       }
     };
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
   }, []);
 
-  // Main game loop: advances the snake one cell every 200 ms.
   useEffect(() => {
     if (gameOver || !started) return;
 
     const interval = setInterval(() => {
-      // Capture the last applied direction before the updater runs, so we have
-      // a known-safe fallback if the buffered direction turns out to be dangerous.
       const prevAppliedDir = lastTickDirectionRef.current;
 
       setGame((prevGame) => {
@@ -100,31 +80,21 @@ function App() {
           }
         };
 
-        // Safety gate: regardless of what the key handler allowed through, reject
-        // any direction whose next position lands on seg[1] or seg[2]. Those cells
-        // are physically unreachable in one step without reversing into the body.
-        // Fall back to the last applied direction which is always safe.
         const candidatePos = nextPos(directionRef.current);
         const hitsNearBody = prevSnake
           .slice(1, 3)
           .some((seg) => seg[0] === candidatePos[0] && seg[1] === candidatePos[1]);
         const dir = hitsNearBody ? prevAppliedDir : directionRef.current;
 
-        // Sync refs so the key handler uses the actually applied direction from now on.
         lastTickDirectionRef.current = dir;
         directionRef.current = dir;
 
         const newHead = nextPos(dir);
 
-        // Check wall collision.
         const hitWall =
-          newHead[0] < 0 ||
-          newHead[0] >= GRID_SIZE ||
-          newHead[1] < 0 ||
-          newHead[1] >= GRID_SIZE;
+          newHead[0] < 0 || newHead[0] >= GRID_SIZE ||
+          newHead[1] < 0 || newHead[1] >= GRID_SIZE;
 
-        // When eating food the tail stays (snake grows), so exclude only the
-        // tail from the self-collision check in the non-eating case.
         const ateFood = newHead[0] === food[0] && newHead[1] === food[1];
         const bodyToCheck = ateFood ? prevSnake : prevSnake.slice(0, -1);
         const hitSelf = bodyToCheck.some(
@@ -136,10 +106,9 @@ function App() {
           return prevGame;
         }
 
-        // Prepend new head. If food was eaten, keep the tail (growth); otherwise
-        // remove it so the snake stays the same length.
         const newSnake = [newHead, ...prevSnake];
         if (ateFood) {
+          setScore((s) => s + 1);
           return { snake: newSnake, food: randomFood(newSnake) };
         }
         newSnake.pop();
@@ -156,54 +125,122 @@ function App() {
     setGame(initialGameState());
     setGameOver(false);
     setStarted(false);
+    setScore(0);
   };
 
+  const gridPx = GRID_SIZE * CELL_PX + (GRID_SIZE - 1);
+
   return (
-    <section>
+    <div className="min-h-screen bg-[#0a0a0f] flex flex-col items-center justify-center gap-6 p-4 font-mono">
+
+      {/* Title */}
+      <h1 className="text-4xl font-bold tracking-widest text-green-400"
+          style={{ textShadow: "0 0 20px #4ade80, 0 0 40px #4ade80" }}>
+        SNAKE
+      </h1>
+
+      {/* Score */}
+      <div className="flex items-center gap-2 text-green-400 text-sm tracking-widest">
+        <span className="text-green-600">SCORE</span>
+        <span className="text-lg font-bold"
+              style={{ textShadow: "0 0 8px #4ade80" }}>
+          {String(score).padStart(4, "0")}
+        </span>
+      </div>
+
+      {/* Board */}
       <div
+        className="relative rounded-sm overflow-hidden"
         style={{
-          display: "grid",
-          gridTemplateColumns: `repeat(${GRID_SIZE}, 20px)`,
-          gap: "1px",
+          width: gridPx,
+          height: gridPx,
+          boxShadow: "0 0 0 2px #14532d, 0 0 40px #052e16, 0 0 80px #052e16",
         }}
       >
-        {Array.from({ length: GRID_SIZE }).map((_, i) =>
-          Array.from({ length: GRID_SIZE }).map((_, j) => {
-            // findIndex so we can distinguish head (0) from body (>0) vs empty (-1).
-            const snakeIdx = game.snake.findIndex(
-              (seg) => seg[0] === i && seg[1] === j,
-            );
-            const isFood = game.food[0] === i && game.food[1] === j;
-            const bg =
-              snakeIdx === 0
-                ? "#888888"
-                : snakeIdx > 0
-                  ? "#000000"
-                  : isFood
-                    ? "#22c55e"
-                    : "#ccc";
-            return (
-              <div
-                key={`${i}-${j}`}
-                style={{
-                  height: "20px",
-                  background: bg,
-                  border: snakeIdx >= 0 ? "1px solid #555" : "none",
-                  boxSizing: "border-box",
-                }}
-              />
-            );
-          }),
+        {/* Grid cells */}
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: `repeat(${GRID_SIZE}, ${CELL_PX}px)`,
+            gap: "1px",
+            background: "#0d1a10",
+          }}
+        >
+          {Array.from({ length: GRID_SIZE }).map((_, i) =>
+            Array.from({ length: GRID_SIZE }).map((_, j) => {
+              const snakeIdx = game.snake.findIndex(
+                (seg) => seg[0] === i && seg[1] === j,
+              );
+              const isFood = game.food[0] === i && game.food[1] === j;
+              const isHead = snakeIdx === 0;
+              const isBody = snakeIdx > 0;
+
+              let bg = "#0f1f13"; // empty cell
+              let shadow = "none";
+
+              if (isHead) {
+                bg = "#86efac";
+                shadow = "0 0 8px #4ade80, 0 0 16px #4ade80";
+              } else if (isBody) {
+                const fade = Math.max(0.3, 1 - snakeIdx * 0.04);
+                bg = `rgba(34, 197, 94, ${fade})`;
+                shadow = `0 0 4px rgba(74, 222, 128, ${fade * 0.6})`;
+              } else if (isFood) {
+                bg = "#f87171";
+                shadow = "0 0 8px #ef4444, 0 0 20px #ef4444";
+              }
+
+              return (
+                <div
+                  key={`${i}-${j}`}
+                  style={{
+                    height: CELL_PX,
+                    background: bg,
+                    boxShadow: shadow,
+                    transition: "background 0.05s",
+                  }}
+                />
+              );
+            }),
+          )}
+        </div>
+
+        {/* Overlay: waiting to start */}
+        {!started && !gameOver && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2"
+               style={{ background: "rgba(10,10,15,0.75)" }}>
+            <p className="text-green-400 text-sm tracking-widest animate-pulse">
+              PRESS ARROW KEY TO START
+            </p>
+          </div>
+        )}
+
+        {/* Overlay: game over */}
+        {gameOver && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-4"
+               style={{ background: "rgba(10,10,15,0.85)" }}>
+            <p className="text-red-400 text-2xl font-bold tracking-widest"
+               style={{ textShadow: "0 0 16px #ef4444" }}>
+              GAME OVER
+            </p>
+            <p className="text-green-600 text-xs tracking-widest">
+              SCORE: {score}
+            </p>
+            <button
+              onClick={handleRestart}
+              className="mt-2 px-6 py-2 text-xs tracking-widest font-bold text-black bg-green-400 rounded-sm hover:bg-green-300 active:scale-95 transition-all"
+              style={{ boxShadow: "0 0 12px #4ade80" }}
+            >
+              PLAY AGAIN
+            </button>
+          </div>
         )}
       </div>
-      {gameOver && (
-        <div>
-          <p>Game Over</p>
-          <button onClick={handleRestart}>Restart</button>
-        </div>
-      )}
-    </section>
+
+      {/* Controls hint */}
+      <p className="text-green-900 text-xs tracking-widest">
+        USE ARROW KEYS TO MOVE
+      </p>
+    </div>
   );
 }
-
-export default App;
