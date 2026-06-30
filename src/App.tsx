@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 
 const GRID_SIZE = 20;
 const CELL_PX = 24;
+const TICK_MS = 150;
 
 type Pos = [number, number];
 const INITIAL_SNAKE: Pos[] = [[0, 0]];
@@ -26,36 +27,62 @@ function initialGameState(): GameState {
   return { snake: INITIAL_SNAKE, food: randomFood(INITIAL_SNAKE) };
 }
 
+const OPPOSITE: Record<string, string> = {
+  up: "down", down: "up", left: "right", right: "left",
+};
+
 export default function App() {
   const [game, setGame] = useState<GameState>(initialGameState);
   const [gameOver, setGameOver] = useState(false);
   const [started, setStarted] = useState(false);
   const [score, setScore] = useState(0);
-  const directionRef = useRef<string>("right");
+
+  // FIFO queue of pending direction changes — processed one per tick so rapid
+  // keypresses are heard in order rather than the last one overwriting the rest.
+  const directionQueueRef = useRef<string[]>([]);
+  // Direction that was applied on the most recent tick.
   const lastTickDirectionRef = useRef<string>("right");
+  // Snake length kept in a ref so the key handler can read it without stale closure.
+  const snakeLengthRef = useRef<number>(1);
+
+  // Keep snakeLengthRef in sync whenever the snake grows or shrinks.
+  useEffect(() => {
+    snakeLengthRef.current = game.snake.length;
+  }, [game.snake.length]);
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
       const map: Record<string, string> = {
-        ArrowUp: "up",
-        ArrowDown: "down",
-        ArrowLeft: "left",
-        ArrowRight: "right",
+        ArrowUp: "up", ArrowDown: "down",
+        ArrowLeft: "left", ArrowRight: "right",
       };
       if (!map[e.key]) return;
       e.preventDefault();
       const next = map[e.key];
-      const opposite: Record<string, string> = {
-        up: "down", down: "up", left: "right", right: "left",
-      };
-      if (
-        next !== opposite[lastTickDirectionRef.current] &&
-        next !== opposite[directionRef.current]
-      ) {
-        directionRef.current = next;
+
+      // The "effective last direction" is the tail of the queue (what the snake
+      // will be doing when this input is finally processed) or, if the queue is
+      // empty, whatever was applied last tick.
+      const queue = directionQueueRef.current;
+      const refDir = queue.length > 0
+        ? queue[queue.length - 1]
+        : lastTickDirectionRef.current;
+
+      // A length-1 snake has no body, so any direction — including a reversal —
+      // is always safe. For longer snakes, block reversal against both the
+      // effective last direction and the tick-applied direction.
+      const isLength1 = snakeLengthRef.current === 1;
+      const blocked =
+        !isLength1 &&
+        (next === OPPOSITE[refDir] || next === OPPOSITE[lastTickDirectionRef.current]);
+
+      if (!blocked) {
+        // Cap the queue at 2 so the buffer doesn't grow stale on key-spam.
+        if (queue.length < 2) queue.push(next);
         setStarted(true);
       }
     };
+
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
   }, []);
@@ -64,7 +91,10 @@ export default function App() {
     if (gameOver || !started) return;
 
     const interval = setInterval(() => {
+      // Consume the next queued direction, or keep going the same way.
+      const queue = directionQueueRef.current;
       const prevAppliedDir = lastTickDirectionRef.current;
+      const nextDir = queue.length > 0 ? queue.shift()! : prevAppliedDir;
 
       setGame((prevGame) => {
         const { snake: prevSnake, food } = prevGame;
@@ -80,14 +110,18 @@ export default function App() {
           }
         };
 
-        const candidatePos = nextPos(directionRef.current);
-        const hitsNearBody = prevSnake
-          .slice(1, 3)
-          .some((seg) => seg[0] === candidatePos[0] && seg[1] === candidatePos[1]);
-        const dir = hitsNearBody ? prevAppliedDir : directionRef.current;
+        // Safety gate: if the dequeued direction would land the head on seg[1]
+        // or seg[2], fall back to the previously applied direction.
+        // Skipped for length-1 snakes (no body segments to hit).
+        const candidatePos = nextPos(nextDir);
+        const hitsNearBody =
+          prevSnake.length > 1 &&
+          prevSnake
+            .slice(1, 3)
+            .some((seg) => seg[0] === candidatePos[0] && seg[1] === candidatePos[1]);
+        const dir = hitsNearBody ? prevAppliedDir : nextDir;
 
         lastTickDirectionRef.current = dir;
-        directionRef.current = dir;
 
         const newHead = nextPos(dir);
 
@@ -114,14 +148,15 @@ export default function App() {
         newSnake.pop();
         return { snake: newSnake, food };
       });
-    }, 200);
+    }, TICK_MS);
 
     return () => clearInterval(interval);
   }, [gameOver, started]);
 
   const handleRestart = () => {
-    directionRef.current = "right";
+    directionQueueRef.current = [];
     lastTickDirectionRef.current = "right";
+    snakeLengthRef.current = 1;
     setGame(initialGameState());
     setGameOver(false);
     setStarted(false);
@@ -133,22 +168,18 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#0a0a0f] flex flex-col items-center justify-center gap-6 p-4 font-mono">
 
-      {/* Title */}
       <h1 className="text-4xl font-bold tracking-widest text-green-400"
           style={{ textShadow: "0 0 20px #4ade80, 0 0 40px #4ade80" }}>
         SNAKE
       </h1>
 
-      {/* Score */}
       <div className="flex items-center gap-2 text-green-400 text-sm tracking-widest">
         <span className="text-green-600">SCORE</span>
-        <span className="text-lg font-bold"
-              style={{ textShadow: "0 0 8px #4ade80" }}>
+        <span className="text-lg font-bold" style={{ textShadow: "0 0 8px #4ade80" }}>
           {String(score).padStart(4, "0")}
         </span>
       </div>
 
-      {/* Board */}
       <div
         className="relative rounded-sm overflow-hidden"
         style={{
@@ -157,7 +188,6 @@ export default function App() {
           boxShadow: "0 0 0 2px #14532d, 0 0 40px #052e16, 0 0 80px #052e16",
         }}
       >
-        {/* Grid cells */}
         <div
           style={{
             display: "grid",
@@ -175,7 +205,7 @@ export default function App() {
               const isHead = snakeIdx === 0;
               const isBody = snakeIdx > 0;
 
-              let bg = "#0f1f13"; // empty cell
+              let bg = "#0f1f13";
               let shadow = "none";
 
               if (isHead) {
@@ -205,7 +235,6 @@ export default function App() {
           )}
         </div>
 
-        {/* Overlay: waiting to start */}
         {!started && !gameOver && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2"
                style={{ background: "rgba(10,10,15,0.75)" }}>
@@ -215,7 +244,6 @@ export default function App() {
           </div>
         )}
 
-        {/* Overlay: game over */}
         {gameOver && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-4"
                style={{ background: "rgba(10,10,15,0.85)" }}>
@@ -237,7 +265,6 @@ export default function App() {
         )}
       </div>
 
-      {/* Controls hint */}
       <p className="text-green-900 text-xs tracking-widest">
         USE ARROW KEYS TO MOVE
       </p>
